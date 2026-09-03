@@ -15,6 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
   :root {
     --pitch-dark: #14382a;
@@ -436,7 +437,6 @@ const PREFS = ["北海道","青森県","岩手県","宮城県","秋田県","山�
 
 let activeTab = 'list';
 let posts = [];
-let myIds = [];
 let filterCat = '';
 let filterPref = '';
 let filterFormat = '';
@@ -456,7 +456,9 @@ let activeDetailPost = null;
 let pendingResultImages = [];
 
 const LS_PREFIX = 'matchin:';
-let useCloud = null;
+const SUPABASE_URL = 'https://oqxchoxtorkzbpferppx.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_E6JcZoEYS-E3Kca4oWqLEA_L1X8JKpP';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 window.addEventListener('error', (ev) => {
   try { showToast('エラー: ' + (ev.message || ev.error)); } catch (e) {}
@@ -465,34 +467,30 @@ window.addEventListener('unhandledrejection', (ev) => {
   try { showToast('エラー: ' + (ev.reason && ev.reason.message ? ev.reason.message : ev.reason)); } catch (e) {}
 });
 
-async function initStorageMode() {
-  if (typeof window.storage === 'undefined' || !window.storage) {
-    useCloud = false;
-    return;
-  }
-  try {
-    await window.storage.set('__ping__', String(Date.now()), false);
-    useCloud = true;
-  } catch (e) {
-    useCloud = false;
-  }
+function localGet(key) {
+  return localStorage.getItem(LS_PREFIX + key);
+}
+function localSet(key, value) {
+  localStorage.setItem(LS_PREFIX + key, value);
 }
 
-async function storageGet(key, shared) {
-  if (useCloud) return window.storage.get(key, shared);
-  const raw = localStorage.getItem(LS_PREFIX + key);
-  if (raw === null) throw new Error('not found: ' + key);
-  return { key, value: raw, shared: !!shared };
+function rowToPost(r) {
+  return {
+    id: r.id, teamName: r.team_name, category: r.category, format: r.format,
+    recruitCount: r.recruit_count, pref: r.pref, type: r.type, date: r.date,
+    kickoff: r.kickoff, message: r.message, venue: r.venue, contact: r.contact,
+    image: r.image, creatorId: r.creator_id, matched: r.matched, createdAt: r.created_at
+  };
 }
-async function storageSet(key, value, shared) {
-  if (useCloud) return window.storage.set(key, value, shared);
-  localStorage.setItem(LS_PREFIX + key, value);
-  return { key, value, shared: !!shared };
+function rowToConv(r) {
+  return {
+    id: r.id, postId: r.post_id, postTeamName: r.post_team_name,
+    ownerId: r.owner_id, ownerTeam: r.owner_team, viewerId: r.viewer_id, viewerTeam: r.viewer_team,
+    updatedAt: r.updated_at, lastMessage: r.last_message
+  };
 }
-async function storageDelete(key, shared) {
-  if (useCloud) return window.storage.delete(key, shared);
-  localStorage.removeItem(LS_PREFIX + key);
-  return { key, deleted: true, shared: !!shared };
+function rowToMsg(r) {
+  return { from: r.from_device, text: r.text, at: r.at };
 }
 
 function showToast(msg) {
@@ -514,50 +512,26 @@ function fmtDate(iso) {
 
 async function loadPosts() {
   try {
-    const idx = await storageGet('post-index', true);
-    const ids = idx ? JSON.parse(idx.value) : [];
-    const loaded = [];
-    for (const id of ids) {
-      try {
-        const r = await storageGet('post:' + id, true);
-        if (r) loaded.push(JSON.parse(r.value));
-      } catch (e) {}
-    }
-    loaded.sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
-    posts = loaded;
+    const { data, error } = await sb.from('posts').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
+    posts = (data || []).map(rowToPost);
   } catch (e) { posts = []; }
 }
 
 async function loadData() {
-  await initStorageMode();
-
-  await loadPosts();
-
-  try {
-    const mine = await storageGet('my-post-ids', false);
-    myIds = mine ? JSON.parse(mine.value) : [];
-  } catch (e) { myIds = []; }
+  deviceId = localGet('device-id');
+  if (!deviceId) {
+    deviceId = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+    localSet('device-id', deviceId);
+  }
+  myTeamName = localGet('my-team-name');
 
   try {
-    let dev = await storageGet('device-id', false).catch(() => null);
-    if (!dev) {
-      deviceId = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
-      await storageSet('device-id', deviceId, false);
-    } else {
-      deviceId = dev.value;
-    }
-  } catch (e) { deviceId = 'd' + Math.random().toString(36).slice(2,10); }
-
-  try {
-    const tn = await storageGet('my-team-name', false).catch(() => null);
-    myTeamName = tn ? tn.value : null;
-  } catch (e) { myTeamName = null; }
-
-  try {
-    const rm = await storageGet('read-marks', false).catch(() => null);
-    readMarks = rm ? JSON.parse(rm.value) : {};
+    const rm = localGet('read-marks');
+    readMarks = rm ? JSON.parse(rm) : {};
   } catch (e) { readMarks = {}; }
 
+  await loadPosts();
   await loadConversations();
 
   render();
@@ -565,10 +539,11 @@ async function loadData() {
 
 async function loadConversations() {
   try {
-    const idx = await storageGet('conv-index', true);
-    const all = idx ? JSON.parse(idx.value) : [];
-    conversations = all.filter(c => c.ownerId === deviceId || c.viewerId === deviceId);
-    conversations.sort((a,b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+    const { data, error } = await sb.from('conversations').select('*')
+      .or(`owner_id.eq.${deviceId},viewer_id.eq.${deviceId}`)
+      .order('updated_at', { ascending: false });
+    if (error) throw error;
+    conversations = (data || []).map(rowToConv);
   } catch (e) { conversations = []; }
 }
 
@@ -972,7 +947,7 @@ function showNameModal() {
     const val = document.getElementById('name-modal-input').value.trim();
     if (!val) { showToast('チーム名を入力してください'); return; }
     myTeamName = val;
-    await storageSet('my-team-name', val, false).catch(() => {});
+    localSet('my-team-name', val);
     bg.remove();
     if (pendingChatPostId) {
       const pid = pendingChatPostId;
@@ -986,20 +961,21 @@ async function openOrCreateConversation(postId) {
   const post = posts.find(p => p.id === postId);
   if (!post || !post.creatorId) { showToast('この投稿にはチャットできません'); return; }
   try {
-    const idx = await storageGet('conv-index', true).catch(() => null);
-    let all = idx ? JSON.parse(idx.value) : [];
-    let conv = all.find(c => c.postId === postId && c.ownerId === post.creatorId && c.viewerId === deviceId);
-    if (!conv) {
-      conv = {
-        id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2,7),
-        postId, postTeamName: post.teamName,
-        ownerId: post.creatorId, ownerTeam: post.teamName,
-        viewerId: deviceId, viewerTeam: myTeamName,
-        updatedAt: new Date().toISOString(), lastMessage: ''
-      };
-      all.push(conv);
-      await storageSet('conv-index', JSON.stringify(all), true);
-      await storageSet('conv-msgs:' + conv.id, JSON.stringify([]), true);
+    const { data: existing, error: findErr } = await sb.from('conversations').select('*')
+      .eq('post_id', postId).eq('owner_id', post.creatorId).eq('viewer_id', deviceId).limit(1);
+    if (findErr) throw findErr;
+    let conv;
+    if (existing && existing.length) {
+      conv = rowToConv(existing[0]);
+    } else {
+      const newId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+      const { error: insErr } = await sb.from('conversations').insert({
+        id: newId, post_id: postId, post_team_name: post.teamName,
+        owner_id: post.creatorId, owner_team: post.teamName,
+        viewer_id: deviceId, viewer_team: myTeamName, last_message: ''
+      });
+      if (insErr) throw insErr;
+      conv = { id: newId, postId, postTeamName: post.teamName, ownerId: post.creatorId, ownerTeam: post.teamName, viewerId: deviceId, viewerTeam: myTeamName, updatedAt: new Date().toISOString(), lastMessage: '' };
     }
     await loadConversations();
     activeTab = 'chat';
@@ -1016,7 +992,7 @@ async function openThread(convId) {
   activeTab = 'chat';
   await loadMessages(convId);
   readMarks[convId] = new Date().toISOString();
-  storageSet('read-marks', JSON.stringify(readMarks), false).catch(() => {});
+  localSet('read-marks', JSON.stringify(readMarks));
   render();
   scrollThreadToBottom();
   startPolling();
@@ -1029,8 +1005,9 @@ async function refreshAndFind(convId) {
 
 async function loadMessages(convId) {
   try {
-    const r = await storageGet('conv-msgs:' + convId, true);
-    activeMessages = r ? JSON.parse(r.value) : [];
+    const { data, error } = await sb.from('messages').select('*').eq('conv_id', convId).order('at', { ascending: true });
+    if (error) throw error;
+    activeMessages = (data || []).map(rowToMsg);
   } catch (e) { activeMessages = []; }
 }
 
@@ -1050,7 +1027,7 @@ function startPolling() {
     if (activeMessages.length !== before) {
       renderThreadMessagesOnly();
       readMarks[activeConv.id] = new Date().toISOString();
-      storageSet('read-marks', JSON.stringify(readMarks), false).catch(() => {});
+      localSet('read-marks', JSON.stringify(readMarks));
     }
   }, 3000);
 }
@@ -1129,23 +1106,20 @@ async function sendMessage(input) {
   renderThreadMessagesOnly();
 
   try {
-    const r = await storageGet('conv-msgs:' + activeConv.id, true).catch(() => null);
-    const current = r ? JSON.parse(r.value) : [];
-    current.push(msg);
-    await storageSet('conv-msgs:' + activeConv.id, JSON.stringify(current), true);
+    const { error: msgErr } = await sb.from('messages').insert({
+      conv_id: activeConv.id, from_device: deviceId, text, at: msg.at
+    });
+    if (msgErr) throw msgErr;
 
-    const idx = await storageGet('conv-index', true).catch(() => null);
-    const all = idx ? JSON.parse(idx.value) : [];
-    const i = all.findIndex(c => c.id === activeConv.id);
-    if (i !== -1) {
-      all[i].updatedAt = msg.at;
-      all[i].lastMessage = text;
-      activeConv = all[i];
-      await storageSet('conv-index', JSON.stringify(all), true);
-    }
+    const { error: updErr } = await sb.from('conversations')
+      .update({ updated_at: msg.at, last_message: text })
+      .eq('id', activeConv.id);
+    if (updErr) throw updErr;
+
+    activeConv = { ...activeConv, updatedAt: msg.at, lastMessage: text };
     readMarks[activeConv.id] = msg.at;
-    storageSet('read-marks', JSON.stringify(readMarks), false).catch(() => {});
-  } catch (e) { showToast('送信に失敗しました'); }
+    localSet('read-marks', JSON.stringify(readMarks));
+  } catch (e) { showToast('送信に失敗しました: ' + (e && e.message ? e.message : e)); }
 }
 
 function escapeHtml(s) {
@@ -1219,7 +1193,7 @@ function renderPost() {
 }
 
 function renderMine() {
-  const mine = posts.filter(p => myIds.includes(p.id));
+  const mine = posts.filter(p => p.creatorId === deviceId);
   if (mine.length === 0) {
     return `<div class="empty">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><circle cx="10" cy="7" r="4"/></svg><br>
@@ -1258,11 +1232,12 @@ function renderMine() {
 async function toggleMatched(id) {
   const post = posts.find(p => p.id === id);
   if (!post) return;
-  const updated = { ...post, matched: !post.matched };
+  const newMatched = !post.matched;
   try {
-    await storageSet('post:' + id, JSON.stringify(updated), true);
-    posts = posts.map(p => p.id === id ? updated : p);
-    showToast(updated.matched ? '募集終了にしました' : '募集を再開しました');
+    const { error } = await sb.from('posts').update({ matched: newMatched }).eq('id', id);
+    if (error) throw error;
+    posts = posts.map(p => p.id === id ? { ...p, matched: newMatched } : p);
+    showToast(newMatched ? '募集終了にしました' : '募集を再開しました');
     render();
   } catch (e) {
     showToast('更新に失敗しました: ' + (e && e.message ? e.message : e));
@@ -1271,24 +1246,18 @@ async function toggleMatched(id) {
 
 async function deletePost(id) {
   try {
-    await storageDelete('post:' + id, true);
-    const idx = await storageGet('post-index', true);
-    const ids = idx ? JSON.parse(idx.value) : [];
-    await storageSet('post-index', JSON.stringify(ids.filter(x => x !== id)), true);
-    myIds = myIds.filter(x => x !== id);
-    await storageSet('my-post-ids', JSON.stringify(myIds), false);
+    const { error } = await sb.from('posts').delete().eq('id', id);
+    if (error) throw error;
     posts = posts.filter(p => p.id !== id);
     showToast('削除しました');
     render();
-  } catch (e) { showToast('削除に失敗しました'); }
+  } catch (e) { showToast('削除に失敗しました: ' + (e && e.message ? e.message : e)); }
 }
 
 function render() {
   const modeTag = document.getElementById('storage-mode-tag');
   if (modeTag) {
-    modeTag.textContent = useCloud
-      ? '⚡ 共有保存モード(他の端末にも反映されます)'
-      : '💾 この端末のみの保存モード(他の端末には反映されません)';
+    modeTag.textContent = '🌐 全チーム共有モード(Supabase接続)';
   }
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === activeTab));
   const chatLabel = document.getElementById('chat-tab-label');
@@ -1394,7 +1363,7 @@ async function handleSubmit(e) {
 
   if (!myTeamName) {
     myTeamName = team;
-    storageSet('my-team-name', team, false).catch(() => {});
+    localSet('my-team-name', team);
   }
 
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2,7);
@@ -1404,13 +1373,12 @@ async function handleSubmit(e) {
   submitBtn.textContent = '投稿中...';
 
   try {
-    await storageSet('post:' + id, JSON.stringify(post), true);
-    const idx = await storageGet('post-index', true).catch(() => null);
-    const ids = idx ? JSON.parse(idx.value) : [];
-    ids.push(id);
-    await storageSet('post-index', JSON.stringify(ids), true);
-    myIds.push(id);
-    await storageSet('my-post-ids', JSON.stringify(myIds), false);
+    const { error } = await sb.from('posts').insert({
+      id, team_name: team, category: cat, format, recruit_count: recruitCount,
+      pref, type: selectedType, date, kickoff, message: msg, venue, contact,
+      image: pendingImage, creator_id: deviceId, matched: false
+    });
+    if (error) throw error;
     posts.unshift(post);
     pendingImage = null;
     showToast('募集を投稿しました');
