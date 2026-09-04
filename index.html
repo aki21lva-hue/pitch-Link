@@ -16,6 +16,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <style>
   :root {
     --pitch-dark: #14382a;
@@ -527,12 +528,35 @@ async function loadPosts() {
   } catch (e) { posts = []; }
 }
 
-async function loadData() {
-  deviceId = localGet('device-id');
-  if (!deviceId) {
-    deviceId = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+const LIFF_ID = '2006739848-9rAkD0df';
+let lineProfile = null;
+
+async function initIdentity() {
+  try {
+    if (typeof liff === 'undefined') throw new Error('liff sdk not loaded');
+    await liff.init({ liffId: LIFF_ID });
+    if (!liff.isLoggedIn()) {
+      liff.login();
+      return false;
+    }
+    const profile = await liff.getProfile();
+    lineProfile = profile;
+    deviceId = 'line:' + profile.userId;
     localSet('device-id', deviceId);
+    return true;
+  } catch (e) {
+    deviceId = localGet('device-id');
+    if (!deviceId) {
+      deviceId = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+      localSet('device-id', deviceId);
+    }
+    return true;
   }
+}
+
+async function loadData() {
+  const ready = await initIdentity();
+  if (!ready) return;
   myTeamName = localGet('my-team-name');
 
   try {
@@ -1321,7 +1345,9 @@ async function deletePost(id) {
 function render() {
   const modeTag = document.getElementById('storage-mode-tag');
   if (modeTag) {
-    modeTag.textContent = '🌐 全チーム共有モード(Supabase接続)';
+    modeTag.textContent = lineProfile
+      ? `🌐 全チーム共有モード(LINE連携: ${lineProfile.displayName})`
+      : '🌐 全チーム共有モード(Supabase接続)';
   }
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === activeTab));
   const chatLabel = document.getElementById('chat-tab-label');
