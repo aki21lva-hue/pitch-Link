@@ -491,7 +491,7 @@ let pendingResultImages = [];
 const LS_PREFIX = 'matchin:';
 const SUPABASE_URL = 'https://oqxchoxtorkzbpferppx.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_E6JcZoEYS-E3Kca4oWqLEA_L1X8JKpP';
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+let sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 window.addEventListener('error', (ev) => {
   try { showToast('エラー: ' + (ev.message || ev.error)); } catch (e) {}
@@ -584,15 +584,17 @@ async function initIdentity() {
     lineProfile = profile;
     deviceId = 'line:' + profile.userId;
     localSet('device-id', deviceId);
-    return true;
   } catch (e) {
     deviceId = localGet('device-id');
     if (!deviceId) {
       deviceId = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
       localSet('device-id', deviceId);
     }
-    return true;
   }
+  sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+    global: { headers: { 'x-device-id': deviceId } }
+  });
+  return true;
 }
 
 async function loadData() {
